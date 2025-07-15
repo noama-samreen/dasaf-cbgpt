@@ -21,8 +21,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
-EDITED_RESPONSES_FILE = 'edited_responses.json'
-RISKS_FILE = 'risks.json'
+EDITED_RESPONSES_FILE = os.path.join(os.path.dirname(__file__), 'data', 'edited_responses.json')
+RISKS_FILE = os.path.join(os.path.dirname(__file__), 'risks.json')
 
 # Configure page settings
 st.set_page_config(
@@ -51,6 +51,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+def get_download_link(buffer, filename, display_text):
+    """Generate a download link for a file."""
+    try:
+        b64 = base64.b64encode(buffer.getvalue()).decode()
+        return f'<a href="data:application/octet-stream;base64,{b64}" download="{filename}">{display_text}</a>'
+    except Exception as e:
+        logger.error(f"Error generating download link: {str(e)}")
+        return None
+
 def load_json_file(filepath):
     """Load and parse a JSON file."""
     try:
@@ -58,6 +67,7 @@ def load_json_file(filepath):
             return json.load(f)
     except FileNotFoundError:
         logger.error(f"File not found: {filepath}")
+        # Return empty dict instead of failing
         return {}
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in file {filepath}: {str(e)}")
@@ -66,6 +76,8 @@ def load_json_file(filepath):
 def save_json_file(filepath, data):
     """Save data to a JSON file."""
     try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
     except Exception as e:
@@ -77,13 +89,25 @@ def load_risks():
 
 def load_edited_responses():
     """Load previously edited responses from file."""
+    if not os.path.exists(EDITED_RESPONSES_FILE):
+        # Create empty file if it doesn't exist
+        save_json_file(EDITED_RESPONSES_FILE, {})
     return load_json_file(EDITED_RESPONSES_FILE)
 
 def save_edited_response(risk_name, response):
-    """Save an edited response to file."""
-    responses = load_edited_responses()
-    responses[risk_name] = response
-    save_json_file(EDITED_RESPONSES_FILE, responses)
+    """Save an edited response to file and session state."""
+    try:
+        # Save to file
+        responses = load_edited_responses()
+        responses[risk_name] = response
+        save_json_file(EDITED_RESPONSES_FILE, responses)
+        
+        # Update session state
+        response_key = f"response_{risk_name}"
+        st.session_state[response_key] = response
+    except Exception as e:
+        logger.error(f"Error saving edited response: {str(e)}")
+        st.error("Failed to save changes. Please try again.")
 
 def process_markdown(text, for_pdf=True):
     """Process markdown formatting for PDF or DOCX."""
@@ -401,48 +425,59 @@ def display_risk_analysis(risk, response):
     """Display risk analysis with edit functionality."""
     st.markdown(f"### {risk['name']}")
     
-    # Initialize session state for this risk
+    # Initialize session state keys
     edit_key = f"show_edit_{risk['name']}"
+    response_key = f"response_{risk['name']}"
+    
+    # Initialize session state if not exists
     if edit_key not in st.session_state:
         st.session_state[edit_key] = False
+    if response_key not in st.session_state:
+        st.session_state[response_key] = response
     
     # Display analysis in expandable container
     with st.expander("View Analysis", expanded=True):
-        if response:
-            st.markdown(response)
+        # Show current analysis
+        if st.session_state[response_key]:
+            st.markdown(st.session_state[response_key])
         else:
             st.info("No analysis available yet.")
         
-        # Edit functionality
-        if not st.session_state[edit_key]:
-            if st.button("Edit Analysis", key=f"edit_btn_{risk['name']}"):
-                st.session_state[edit_key] = True
-                st.experimental_rerun()
+        # Edit button
+        col1, col2, col3 = st.columns([1, 1, 3])
+        
+        with col1:
+            if not st.session_state[edit_key]:
+                if st.button("📝 Edit", key=f"edit_btn_{risk['name']}"):
+                    st.session_state[edit_key] = True
+                    st.experimental_rerun()
         
         # Show edit box when editing
         if st.session_state[edit_key]:
             edited_response = st.text_area(
-                "Edit Response",
-                value=response if response else "",
+                "Edit Analysis",
+                value=st.session_state[response_key] if st.session_state[response_key] else "",
                 key=f"edit_{risk['name']}",
                 height=200
             )
             
             col1, col2, col3 = st.columns([1, 1, 3])
+            
             with col1:
-                if st.button("Save", key=f"save_{risk['name']}"):
+                if st.button("💾 Save", key=f"save_{risk['name']}"):
                     save_edited_response(risk['name'], edited_response)
+                    st.session_state[response_key] = edited_response
                     st.session_state[edit_key] = False
-                    st.success("Edits saved successfully!")
+                    st.success("✅ Changes saved!")
                     st.experimental_rerun()
             
             with col2:
-                if st.button("Cancel", key=f"cancel_{risk['name']}"):
+                if st.button("❌ Cancel", key=f"cancel_{risk['name']}"):
                     st.session_state[edit_key] = False
                     st.experimental_rerun()
             
             with col3:
-                if st.button("Regenerate Analysis", key=f"regen_{risk['name']}"):
+                if st.button("🔄 Regenerate", key=f"regen_{risk['name']}"):
                     client = CbGptClient()
                     new_response = client.analyze_blockchain_security(
                         st.session_state.blockchain_name,
@@ -452,40 +487,57 @@ def display_risk_analysis(risk, response):
                     
                     if new_response:
                         save_edited_response(risk['name'], new_response)
+                        st.session_state[response_key] = new_response
                         st.session_state[edit_key] = False
+                        st.success("✅ Analysis regenerated!")
                         st.experimental_rerun()
+                    else:
+                        st.error("❌ Failed to regenerate analysis")
 
 def main():
     """Main application function."""
     st.markdown("<h1 class='main-header'>Blockchain Security Analysis Framework</h1>", unsafe_allow_html=True)
     
+    # Initialize session state for form data if not exists
+    if 'form_submitted' not in st.session_state:
+        st.session_state.form_submitted = False
+    
     # Input form
     with st.form("blockchain_info"):
         col1, col2, col3 = st.columns(3)
         with col1:
-            blockchain_name = st.text_input("Blockchain Name", "")
+            blockchain_name = st.text_input("Blockchain Name", 
+                value=st.session_state.get('blockchain_name', ''))
         with col2:
-            blockchain_symbol = st.text_input("Symbol", "")
+            blockchain_symbol = st.text_input("Symbol", 
+                value=st.session_state.get('blockchain_symbol', ''))
         with col3:
             blockchain_website = st.text_input(
-                "Block Explorer URL", "",
+                "Block Explorer URL", 
+                value=st.session_state.get('blockchain_website', ''),
                 help="Enter the blockchain's block explorer URL (e.g., https://etherscan.io) for validator distribution analysis"
             )
         
         submitted = st.form_submit_button("Analyze Security")
     
+    # Handle form submission
     if submitted and blockchain_name and blockchain_symbol:
+        # Store form data in session state
+        st.session_state.blockchain_name = blockchain_name
+        st.session_state.blockchain_symbol = blockchain_symbol
+        st.session_state.blockchain_website = blockchain_website
+        st.session_state.form_submitted = True
+        
         # Clear existing responses
         if os.path.exists(EDITED_RESPONSES_FILE):
             os.remove(EDITED_RESPONSES_FILE)
-        
-        # Update session state
-        st.session_state.blockchain_name = blockchain_name
-        st.session_state.blockchain_website = blockchain_website
-        
+    
+    # Show analysis if form was submitted (either now or previously)
+    if st.session_state.form_submitted:
         # Display header
-        st.header(f"Security Analysis for {blockchain_name} ({blockchain_symbol})")
-        st.markdown(f"Website: [{blockchain_website}]({blockchain_website})")
+        st.header(f"Security Analysis for {st.session_state.blockchain_name} ({st.session_state.blockchain_symbol})")
+        if st.session_state.blockchain_website:
+            st.markdown(f"Block Explorer: [{st.session_state.blockchain_website}]({st.session_state.blockchain_website})")
         
         # Initialize client and load risks
         risks_data = load_risks()
@@ -495,24 +547,41 @@ def main():
         critical_risks = [risk for risk in risks_data['risks'] if risk['is_critical']]
         non_critical_risks = [risk for risk in risks_data['risks'] if not risk['is_critical']]
         
+        # Add reset button
+        if st.button("⚠️ Start New Analysis"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.experimental_rerun()
+            return
+        
         # Display risks
         st.markdown("## 🚨 Critical Security Risks")
         for risk in critical_risks:
-            response = cb_gpt.analyze_blockchain_security(
-                blockchain_name,
-                risk['prompt'],
-                block_explorer_url=blockchain_website if blockchain_website else None
-            )
-            display_risk_analysis(risk, response)
+            # Check if response exists in session state
+            response_key = f"response_{risk['name']}"
+            if response_key not in st.session_state:
+                response = cb_gpt.analyze_blockchain_security(
+                    st.session_state.blockchain_name,
+                    risk['prompt'],
+                    block_explorer_url=st.session_state.blockchain_website if st.session_state.blockchain_website else None
+                )
+                st.session_state[response_key] = response
+            
+            display_risk_analysis(risk, st.session_state[response_key])
         
         st.markdown("## ⚠️ Other Security Considerations")
         for risk in non_critical_risks:
-            response = cb_gpt.analyze_blockchain_security(
-                blockchain_name,
-                risk['prompt'],
-                block_explorer_url=blockchain_website if blockchain_website else None
-            )
-            display_risk_analysis(risk, response)
+            # Check if response exists in session state
+            response_key = f"response_{risk['name']}"
+            if response_key not in st.session_state:
+                response = cb_gpt.analyze_blockchain_security(
+                    st.session_state.blockchain_name,
+                    risk['prompt'],
+                    block_explorer_url=st.session_state.blockchain_website if st.session_state.blockchain_website else None
+                )
+                st.session_state[response_key] = response
+            
+            display_risk_analysis(risk, st.session_state[response_key])
         
         # Export functionality
         st.markdown("### Export Report")
@@ -521,13 +590,17 @@ def main():
         
         with col1:
             docx_buffer = generate_docx(
-                blockchain_name, blockchain_symbol, blockchain_website,
-                critical_risks, non_critical_risks, edited_responses
+                st.session_state.blockchain_name,
+                st.session_state.blockchain_symbol,
+                st.session_state.blockchain_website,
+                critical_risks,
+                non_critical_risks,
+                edited_responses
             )
             st.markdown(
                 get_download_link(
                     docx_buffer,
-                    f"{blockchain_name}_Security_Analysis.docx",
+                    f"{st.session_state.blockchain_name}_Security_Analysis.docx",
                     "📄 Download as DOCX"
                 ),
                 unsafe_allow_html=True
@@ -535,14 +608,18 @@ def main():
         
         with col2:
             pdf_buffer = generate_pdf(
-                blockchain_name, blockchain_symbol, blockchain_website,
-                critical_risks, non_critical_risks, edited_responses
+                st.session_state.blockchain_name,
+                st.session_state.blockchain_symbol,
+                st.session_state.blockchain_website,
+                critical_risks,
+                non_critical_risks,
+                edited_responses
             )
             if pdf_buffer:
                 st.markdown(
                     get_download_link(
                         pdf_buffer,
-                        f"{blockchain_name}_Security_Analysis.pdf",
+                        f"{st.session_state.blockchain_name}_Security_Analysis.pdf",
                         "📑 Download as PDF"
                     ),
                     unsafe_allow_html=True
