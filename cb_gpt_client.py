@@ -59,7 +59,7 @@ class CbGptClient:
         """Prepare the request body with prompts."""
         standard_disclaimer = (
             "Respond only with factual, publicly available information. "
-            "Do not speculate, assume, or generate unverifiable content. "
+            "Do not speculate, assume, hallucinate, or generate unverifiable content. "
             "If a clear, direct answer is Not verifiable with public information, "
             "state 'Not verifiable with public information' and explain why. "
             "Link to sources where possible. "
