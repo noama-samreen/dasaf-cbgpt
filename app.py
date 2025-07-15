@@ -531,6 +531,12 @@ def main():
         # Clear existing responses
         if os.path.exists(EDITED_RESPONSES_FILE):
             os.remove(EDITED_RESPONSES_FILE)
+        save_json_file(EDITED_RESPONSES_FILE, {})
+        
+        # Clear session state responses
+        for key in list(st.session_state.keys()):
+            if key.startswith('response_'):
+                del st.session_state[key]
     
     # Show analysis if form was submitted (either now or previously)
     if st.session_state.form_submitted:
@@ -551,41 +557,62 @@ def main():
         if st.button("⚠️ Start New Analysis"):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
+            if os.path.exists(EDITED_RESPONSES_FILE):
+                os.remove(EDITED_RESPONSES_FILE)
             st.experimental_rerun()
             return
+        
+        # Load existing responses
+        edited_responses = load_edited_responses()
         
         # Display risks
         st.markdown("## 🚨 Critical Security Risks")
         for risk in critical_risks:
-            # Check if response exists in session state
+            # Check if response exists in session state or edited responses
             response_key = f"response_{risk['name']}"
             if response_key not in st.session_state:
-                response = cb_gpt.analyze_blockchain_security(
-                    st.session_state.blockchain_name,
-                    risk['prompt'],
-                    block_explorer_url=st.session_state.blockchain_website if st.session_state.blockchain_website else None
-                )
-                st.session_state[response_key] = response
+                # Check if response exists in edited responses file
+                if risk['name'] in edited_responses:
+                    st.session_state[response_key] = edited_responses[risk['name']]
+                else:
+                    # Generate new response
+                    response = cb_gpt.analyze_blockchain_security(
+                        st.session_state.blockchain_name,
+                        risk['prompt'],
+                        block_explorer_url=st.session_state.blockchain_website if st.session_state.blockchain_website else None
+                    )
+                    st.session_state[response_key] = response
+                    # Save to edited responses
+                    save_edited_response(risk['name'], response)
             
             display_risk_analysis(risk, st.session_state[response_key])
         
         st.markdown("## ⚠️ Other Security Considerations")
         for risk in non_critical_risks:
-            # Check if response exists in session state
+            # Check if response exists in session state or edited responses
             response_key = f"response_{risk['name']}"
             if response_key not in st.session_state:
-                response = cb_gpt.analyze_blockchain_security(
-                    st.session_state.blockchain_name,
-                    risk['prompt'],
-                    block_explorer_url=st.session_state.blockchain_website if st.session_state.blockchain_website else None
-                )
-                st.session_state[response_key] = response
+                # Check if response exists in edited responses file
+                if risk['name'] in edited_responses:
+                    st.session_state[response_key] = edited_responses[risk['name']]
+                else:
+                    # Generate new response
+                    response = cb_gpt.analyze_blockchain_security(
+                        st.session_state.blockchain_name,
+                        risk['prompt'],
+                        block_explorer_url=st.session_state.blockchain_website if st.session_state.blockchain_website else None
+                    )
+                    st.session_state[response_key] = response
+                    # Save to edited responses
+                    save_edited_response(risk['name'], response)
             
             display_risk_analysis(risk, st.session_state[response_key])
         
         # Export functionality
         st.markdown("### Export Report")
         col1, col2 = st.columns(2)
+        
+        # Reload edited responses to ensure we have the latest version
         edited_responses = load_edited_responses()
         
         with col1:
